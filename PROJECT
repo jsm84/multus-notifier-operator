@@ -1,0 +1,19 @@
+domain: f-i.de
+layout:
+- go.kubebuilder.io/v3
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+projectName: multus-notifier-operator
+repo: github.com/jsm84/multus-notifier-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: f-i.de
+  group: apps
+  kind: MultusNotifier
+  path: github.com/jsm84/multus-notifier-operator/api/v1alpha1
+  version: v1alpha1
+version: "3"

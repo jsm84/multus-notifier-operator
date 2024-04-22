@@ -1,0 +1,31 @@
+# permissions for end users to edit multusnotifiers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: multusnotifier-editor-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: multus-notifier-operator
+    app.kubernetes.io/part-of: multus-notifier-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: multusnotifier-editor-role
+rules:
+- apiGroups:
+  - apps.f-i.de
+  resources:
+  - multusnotifiers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps.f-i.de
+  resources:
+  - multusnotifiers/status
+  verbs:
+  - get

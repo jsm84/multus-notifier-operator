@@ -1,0 +1,12 @@
+apiVersion: apps.f-i.de/v1alpha1
+kind: MultusNotifier
+metadata:
+  labels:
+    app.kubernetes.io/name: multusnotifier
+    app.kubernetes.io/instance: multusnotifier-sample
+    app.kubernetes.io/part-of: multus-notifier-operator
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: multus-notifier-operator
+  name: multusnotifier-sample
+spec:
+  # TODO(user): Add fields here
