@@ -18,15 +18,15 @@ package controllers
 
 import (
 	"context"
-	"os"
-	"strconv"
+	"encoding/json"
+	"time"
 
+	netattachdef "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -56,12 +56,12 @@ type MultusNotifierReconciler struct {
 func (r *MultusNotifierReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
-	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
+	reqLogger := log.WithValues("Request.Namespace", req.Namespace, "Request.Name", req.Name)
 	reqLogger.Info("Reconciling MultusNotifier")
 
 	// Fetch the MultusNotifer instance
-	instance := &noopv1alpha1.MultusNotifier{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	instance := &appsv1alpha1.MultusNotifier{}
+	err := r.client.Get(context.TODO(), req.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
@@ -73,85 +73,63 @@ func (r *MultusNotifierReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object
-	pods := newPodsForCR(instance)
-
-	// Check if each Pod already exists
-	found := []corev1.Pod{}
-
-	for _, pod := range pods {
-		// Set MultusNotifier instance as the owner and controller
-		if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-			return reconcile.Result{}, err
-		}
-		err = r.client.List(context.TODO(), labels.Selector{Label: instance.PodLabel}, found)
-		if err != nil && errors.IsNotFound(err) {
-			reqLogger.Info("Getting List of Pods", "labels.Selector", instance.PodLabel)
-			err = r.client.Create(context.TODO(), pod)
-			if err != nil {
-				return reconcile.Result{}, err
-			}
-
-			// Pod created successfully - don't requeue
-			return reconcile.Result{}, nil
-		} else if err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Pod already exists - don't requeue
-		reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	// Get list of pods using  WatchNamespace from CR instance
+	pods, err := listPodsWithLabel(instance)
+	if err != nil {
+		// Error fetching pods - requeue the request.
+		return reconcile.Result{}, err
 	}
 
-	// Update CR Status once deployed
-	if instance.Status.Deployed != true {
-		instance.Status.Deployed = true
+	// Our soon to be filled out list of Multus Pod IP Addresses
+	ipList := []appsv1alpha1.MultusPodIPList{}
+	if len(pods) > 0 {
+		for idx, pod := range pods {
+
+			netStatus := []netattachdef.NetworkStatus{}
+			netStatusData := pod.Annotation["k8s.v1.cni.cncf.io/network-status"]
+			netStatusBytes := []byte(netStatusData)
+
+			err := json.Unmarshal(netStatusBytes, &netStatus)
+			if err != nil {
+				reqLogger.Error("Error unmarshaling network-status from pod", pod.Name)
+				return
+			}
+
+			ipList[idx] = appsv1alpha1.MultusPodIPList{
+				PodName:      pod.Name,
+				PodNamespace: pod.Namespace,
+				MultusIP:     netStatus[len(netStatus)-1].IPs[0],
+			}
+			reqLogger.Debug("Found Multus Pod IP", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name, "Pod.MultusIP", ipList[idx].MultusIP)
+		}
+	}
+
+	if len(ipList) > 0 {
+		// Update CR Status once deployed
+		instance.Status.PodIPList = ipList
 		reqLogger.Info("Updating Object Status", "CR.Kind", instance.Kind, "CR.Name", instance.Name)
 		err := r.client.Status().Update(context.TODO(), instance)
 		if err != nil {
-			reqLogger.Error(err, "Failed to update pod deploy status")
+			reqLogger.Error(err, "Failed to update Multus Pod IP status")
 			return reconcile.Result{}, err
 		}
 	}
-	return reconcile.Result{}, nil
+
+	return reconcile.Result{RequeueAfter: 300 * time.Second}, nil
 }
 
-// newPodsForCR returns a ubi-minimal pod with the same name/namespace as the cr
-func newPodsForCR(cr *noopv1alpha1.UBINoOp) []*corev1.Pod {
-	// get the container image location from the expected env var
-	// default to ubi8 minimal image from registry.redhat.io
-	ubiImg := os.Getenv("RELATED_IMAGE_UBI_MINIMAL")
-	if ubiImg == "" {
-		ubiImg = "registry.redhat.io/ubi8/ubi-minimal:latest"
+// listPodsWithLabel fetches a list of pods with a specific label, and optionally also within
+// a specific set of namespaces.
+func (r *MultusNotifierReconciler) listPodsWithLabel(cr *appsv1alpha1.MultusNotifier) ([]corev1.Pod, error) {
+	reqLogger.Info("Getting List of Pods", "labels.Selector", cr.WatchLabel)
+	podList := *CoreV1.PodList{}
+	err := r.client.List(context.TODO(), labels.Selector{Label: cr.WatchLabel}, podList)
+	if err != nil && errors.IsNotFound(err) {
+		req.Logger.Error("No pods found with label", "labels.Selector", cr.WatchLabel)
+	} else {
+		req.Logger.Error("Error occurred while fetching pods")
 	}
-
-	// podLst is a slice of pod whose len matches cr.Spec.Size
-	podLst := make([]*corev1.Pod, cr.Spec.Size)
-
-	labels := map[string]string{
-		"app": cr.Name,
-	}
-
-	for idx, _ := range podLst {
-		i := strconv.Itoa(idx)
-		podLst[idx] = &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      cr.Name + "-pod" + i,
-				Namespace: cr.Namespace,
-				Labels:    labels,
-			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{
-					{
-						Name:    "ubi-minimal",
-						Image:   ubiImg,
-						Command: []string{"sleep", "3600"},
-					},
-				},
-			},
-		}
-	}
-
-	return podLst
+	return podList.Pods, err
 }
 
 // SetupWithManager sets up the controller with the Manager.
